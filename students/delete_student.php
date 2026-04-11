@@ -1,41 +1,50 @@
 <?php
-require_once "../db_connect.php";
+define("APP_BASE_PATH", "../");
+require_once __DIR__ . "/../includes/app.php";
+require_login();
 
-$studentId = isset($_GET["id"]) ? (int) $_GET["id"] : 0;
+$studentId = (int) ($_GET["id"] ?? 0);
 
 if ($studentId <= 0) {
-    header("Location: view_students.php?status=invalid");
-    exit;
+    set_flash("error", "Invalid student record.");
+    redirect_to("view_students.php");
 }
 
-try {
-    $checkStmt = $conn->prepare("SELECT COUNT(*) FROM book_issue WHERE student_id = ?");
-    $checkStmt->bind_param("i", $studentId);
-    $checkStmt->execute();
-    $checkStmt->bind_result($issueCount);
-    $checkStmt->fetch();
-    $checkStmt->close();
+$selectStmt = $conn->prepare("SELECT college_id, profile_photo FROM students WHERE student_id = ?");
+$selectStmt->bind_param("i", $studentId);
+$selectStmt->execute();
+$student = $selectStmt->get_result()->fetch_assoc();
+$selectStmt->close();
 
-    if ((int) $issueCount > 0) {
-        header("Location: view_students.php?status=linked");
-        exit;
-    }
-
-    $stmt = $conn->prepare("DELETE FROM students WHERE student_id = ?");
-    $stmt->bind_param("i", $studentId);
-    $stmt->execute();
-
-    if ($stmt->affected_rows > 0) {
-        $stmt->close();
-        header("Location: view_students.php?status=deleted");
-        exit;
-    }
-
-    $stmt->close();
-    header("Location: view_students.php?status=invalid");
-    exit;
-} catch (mysqli_sql_exception $exception) {
-    header("Location: view_students.php?status=error");
-    exit;
+if (!$student) {
+    set_flash("error", "Student record not found.");
+    redirect_to("view_students.php");
 }
-?>
+
+require_college_access((int) $student["college_id"], "view_students.php");
+
+$checkStmt = $conn->prepare("SELECT COUNT(*) AS total FROM book_issue WHERE student_id = ? AND status = 'issued'");
+$checkStmt->bind_param("i", $studentId);
+$checkStmt->execute();
+$issueCount = (int) ($checkStmt->get_result()->fetch_assoc()["total"] ?? 0);
+$checkStmt->close();
+
+if ($issueCount > 0) {
+    set_flash("error", "This student cannot be deleted while books are still issued.");
+    redirect_to("view_students.php");
+}
+
+$deleteStmt = $conn->prepare("DELETE FROM students WHERE student_id = ?");
+$deleteStmt->bind_param("i", $studentId);
+$deleteStmt->execute();
+$deleted = $deleteStmt->affected_rows > 0;
+$deleteStmt->close();
+
+if ($deleted) {
+    delete_uploaded_file($student["profile_photo"] ?? null);
+    set_flash("success", "Student record deleted successfully.");
+} else {
+    set_flash("error", "Unable to delete the student record.");
+}
+
+redirect_to("view_students.php");

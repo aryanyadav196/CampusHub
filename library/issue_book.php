@@ -1,22 +1,15 @@
 <?php
-require_once "../db_connect.php";
+define("APP_BASE_PATH", "../");
+require_once __DIR__ . "/../includes/app.php";
+require_login();
 
 $pageTitle = "Issue Book";
+$pageKey = "library";
 $basePath = "../";
-$successMessage = "";
 $errorMessage = "";
-
-if (isset($_GET["status"])) {
-    if ($_GET["status"] === "deleted") {
-        $successMessage = "Issue record deleted successfully.";
-    } elseif ($_GET["status"] === "updated") {
-        $successMessage = "Issue record updated successfully.";
-    } elseif ($_GET["status"] === "invalid") {
-        $errorMessage = "Invalid issue record selected.";
-    } elseif ($_GET["status"] === "error") {
-        $errorMessage = "Unable to process the issue record.";
-    }
-}
+$successMessage = "";
+$collegeFilter = is_admin() ? (int) ($_GET["college_id"] ?? 0) : current_college_id();
+$scopeCondition = $collegeFilter > 0 ? " WHERE college_id = " . $collegeFilter : "";
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $studentId = (int) ($_POST["student_id"] ?? 0);
@@ -25,181 +18,175 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $returnDate = $_POST["return_date"] ?? "";
 
     if ($studentId <= 0 || $bookId <= 0 || $issueDate === "" || $returnDate === "") {
-        $errorMessage = "Please select a student, a book, and both dates.";
+        $errorMessage = "Please select a student, book, and both dates.";
     } elseif ($returnDate < $issueDate) {
-        $errorMessage = "Return date cannot be earlier than issue date.";
+        $errorMessage = "Expected return date cannot be earlier than issue date.";
     } else {
-        $bookCheckStmt = $conn->prepare("SELECT available_copies FROM library_books WHERE book_id = ?");
-        $bookCheckStmt->bind_param("i", $bookId);
-        $bookCheckStmt->execute();
-        $bookCheckStmt->bind_result($availableCopies);
-        $bookFound = $bookCheckStmt->fetch();
-        $bookCheckStmt->close();
+        $bookStmt = $conn->prepare("SELECT college_id, available_copies FROM library_books WHERE book_id = ?");
+        $bookStmt->bind_param("i", $bookId);
+        $bookStmt->execute();
+        $book = $bookStmt->get_result()->fetch_assoc();
+        $bookStmt->close();
 
-        if (!$bookFound) {
-            $errorMessage = "Selected book does not exist.";
-        } elseif ((int) $availableCopies <= 0) {
-            $errorMessage = "This book is out of stock.";
+        $studentStmt = $conn->prepare("SELECT college_id FROM students WHERE student_id = ?");
+        $studentStmt->bind_param("i", $studentId);
+        $studentStmt->execute();
+        $student = $studentStmt->get_result()->fetch_assoc();
+        $studentStmt->close();
+
+        if (!$book || !$student) {
+            $errorMessage = "Selected student or book no longer exists.";
+        } elseif ((int) $book["college_id"] !== (int) $student["college_id"] || !can_access_college((int) $book["college_id"])) {
+            $errorMessage = "Student and book must belong to the same accessible college.";
+        } elseif ((int) $book["available_copies"] <= 0) {
+            $errorMessage = "This book is currently unavailable.";
         } else {
             $conn->begin_transaction();
-
             try {
-                $issueStmt = $conn->prepare("INSERT INTO book_issue (student_id, book_id, issue_date, return_date) VALUES (?, ?, ?, ?)");
-                $issueStmt->bind_param("iiss", $studentId, $bookId, $issueDate, $returnDate);
-                $issueStmt->execute();
-                $issueStmt->close();
+                $collegeId = (int) $book["college_id"];
+                $status = "issued";
+                $insertStmt = $conn->prepare("
+                    INSERT INTO book_issue (college_id, student_id, book_id, issue_date, expected_return_date, status)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ");
+                $insertStmt->bind_param("iiisss", $collegeId, $studentId, $bookId, $issueDate, $returnDate, $status);
+                $insertStmt->execute();
+                $insertStmt->close();
 
                 $updateStmt = $conn->prepare("UPDATE library_books SET available_copies = available_copies - 1 WHERE book_id = ?");
                 $updateStmt->bind_param("i", $bookId);
                 $updateStmt->execute();
                 $updateStmt->close();
 
+                sync_book_status($conn, $bookId);
                 $conn->commit();
                 $successMessage = "Book issued successfully.";
-                $_POST = array();
-            } catch (Exception $exception) {
+                $_POST = [];
+            } catch (Throwable $throwable) {
                 $conn->rollback();
-                $errorMessage = "Unable to issue book. " . $exception->getMessage();
+                $errorMessage = "Unable to issue the book right now.";
             }
         }
     }
 }
 
-$students = $conn->query("SELECT student_id, name, department FROM students ORDER BY name ASC");
-$books = $conn->query("SELECT book_id, book_name, available_copies FROM library_books ORDER BY book_name ASC");
-
-// JOIN is used here to combine student details and book details in one result.
-$issueListQuery = "
+$students = $conn->query("SELECT student_id, name, department FROM students" . $scopeCondition . " ORDER BY name ASC");
+$books = $conn->query("SELECT book_id, book_name, available_copies FROM library_books" . $scopeCondition . " ORDER BY book_name ASC");
+$issueList = $conn->query("
     SELECT
         book_issue.issue_id,
+        book_issue.status,
+        book_issue.issue_date,
+        book_issue.expected_return_date,
+        book_issue.actual_return_date,
         students.name,
         students.department,
         library_books.book_name,
-        library_books.author,
-        book_issue.issue_date,
-        book_issue.return_date
+        library_books.author
     FROM book_issue
-    INNER JOIN students ON book_issue.student_id = students.student_id
-    INNER JOIN library_books ON book_issue.book_id = library_books.book_id
+    INNER JOIN students ON students.student_id = book_issue.student_id
+    INNER JOIN library_books ON library_books.book_id = book_issue.book_id
+    " . ($scopeCondition ? " WHERE book_issue.college_id = " . $collegeFilter : "") . "
     ORDER BY book_issue.issue_id DESC
-";
-$issueList = $conn->query($issueListQuery);
+");
 
 require_once "../includes/header.php";
 ?>
 
 <section class="page-heading">
-    <h1>Issue Book</h1>
-    <p>Create circulation records and track issued materials across the library.</p>
+    <h1>Library Circulation</h1>
+    <p>Issue books with stronger validation and track issued versus returned records clearly.</p>
 </section>
 
-<section class="two-column issue-layout">
-    <div class="form-card issue-panel">
+<section class="split-layout">
+    <article class="form-card">
         <h2>New Issue Record</h2>
-
-        <?php if ($successMessage !== ""): ?>
-            <div class="message"><?php echo e($successMessage); ?></div>
-        <?php endif; ?>
-
-        <?php if ($errorMessage !== ""): ?>
-            <div class="error"><?php echo e($errorMessage); ?></div>
-        <?php endif; ?>
+        <?php if ($successMessage !== ""): ?><div class="message"><?php echo e($successMessage); ?></div><?php endif; ?>
+        <?php if ($errorMessage !== ""): ?><div class="error"><?php echo e($errorMessage); ?></div><?php endif; ?>
 
         <form method="post">
             <div>
-                <label for="student_id">Select Student</label>
-                <select id="student_id" name="student_id">
+                <label for="student_id">Student</label>
+                <select id="student_id" name="student_id" required>
                     <option value="">Select Student</option>
-                    <?php if ($students && $students->num_rows > 0): ?>
-                        <?php while ($student = $students->fetch_assoc()): ?>
-                            <option value="<?php echo $student["student_id"]; ?>" <?php echo ((string) ($student["student_id"]) === ($_POST["student_id"] ?? "")) ? "selected" : ""; ?>>
-                                <?php echo e(($student["name"] ?? "") . " - " . ($student["department"] ?? "")); ?>
-                            </option>
-                        <?php endwhile; ?>
-                    <?php endif; ?>
-                </select>
-            </div>
-
-            <div>
-                <label for="book_id">Select Book</label>
-                <select id="book_id" name="book_id">
-                    <option value="">Select Book</option>
-                    <?php if ($books && $books->num_rows > 0): ?>
-                        <?php while ($book = $books->fetch_assoc()): ?>
-                            <option value="<?php echo $book["book_id"]; ?>" <?php echo ((string) ($book["book_id"]) === ($_POST["book_id"] ?? "")) ? "selected" : ""; ?>>
-                                <?php echo e(($book["book_name"] ?? "") . " (Available: " . ($book["available_copies"] ?? "") . ")"); ?>
-                            </option>
-                        <?php endwhile; ?>
-                    <?php endif; ?>
-                </select>
-            </div>
-
-            <div>
-                <label for="issue_date">Issue Date</label>
-                <input type="date" id="issue_date" name="issue_date" value="<?php echo e($_POST["issue_date"] ?? date("Y-m-d")); ?>">
-            </div>
-
-            <div>
-                <label for="return_date">Return Date</label>
-                <input type="date" id="return_date" name="return_date" value="<?php echo e($_POST["return_date"] ?? ""); ?>">
-            </div>
-
-            <button type="submit">Create Issue Record</button>
-        </form>
-    </div>
-
-    <div class="table-card issue-panel issue-table-panel">
-        <h2>Issued Books</h2>
-
-        <?php if ($issueList && $issueList->num_rows > 0): ?>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Issue ID</th>
-                        <th>Student</th>
-                        <th>Department</th>
-                        <th>Book</th>
-                        <th>Author</th>
-                        <th>Issue Date</th>
-                        <th>Return Date</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php while ($issue = $issueList->fetch_assoc()): ?>
-                        <tr>
-                            <td><?php echo e($issue["issue_id"] ?? ""); ?></td>
-                            <td><?php echo e($issue["name"] ?? ""); ?></td>
-                            <td><?php echo e($issue["department"] ?? ""); ?></td>
-                            <td><?php echo e($issue["book_name"] ?? ""); ?></td>
-                            <td><?php echo e($issue["author"] ?? ""); ?></td>
-                            <td><?php echo e($issue["issue_date"] ?? ""); ?></td>
-                            <td><?php echo e($issue["return_date"] ?? ""); ?></td>
-                            <td>
-                                <div class="action-group">
-                                    <a
-                                        class="btn-edit"
-                                        href="edit_issue.php?id=<?php echo urlencode((string) ($issue["issue_id"] ?? "")); ?>"
-                                    >
-                                        Edit
-                                    </a>
-                                    <a
-                                        class="btn-delete"
-                                        href="delete_issue.php?id=<?php echo urlencode((string) ($issue["issue_id"] ?? "")); ?>"
-                                        onclick="return confirm('Are you sure you want to delete this issue record?');"
-                                    >
-                                        Delete
-                                    </a>
-                                </div>
-                            </td>
-                        </tr>
+                    <?php while ($student = $students->fetch_assoc()): ?>
+                        <option value="<?php echo (int) $student["student_id"]; ?>" <?php echo ((int) ($_POST["student_id"] ?? 0) === (int) $student["student_id"]) ? "selected" : ""; ?>>
+                            <?php echo e($student["name"] . " - " . $student["department"]); ?>
+                        </option>
                     <?php endwhile; ?>
-                </tbody>
-            </table>
+                </select>
+            </div>
+            <div>
+                <label for="book_id">Book</label>
+                <select id="book_id" name="book_id" required>
+                    <option value="">Select Book</option>
+                    <?php while ($book = $books->fetch_assoc()): ?>
+                        <option value="<?php echo (int) $book["book_id"]; ?>" <?php echo ((int) ($_POST["book_id"] ?? 0) === (int) $book["book_id"]) ? "selected" : ""; ?>>
+                            <?php echo e($book["book_name"] . " (Available: " . $book["available_copies"] . ")"); ?>
+                        </option>
+                    <?php endwhile; ?>
+                </select>
+            </div>
+            <div class="form-grid">
+                <div>
+                    <label for="issue_date">Issue Date</label>
+                    <input type="date" id="issue_date" name="issue_date" value="<?php echo e($_POST["issue_date"] ?? date("Y-m-d")); ?>" required>
+                </div>
+                <div>
+                    <label for="return_date">Expected Return</label>
+                    <input type="date" id="return_date" name="return_date" value="<?php echo e($_POST["return_date"] ?? ""); ?>" required>
+                </div>
+            </div>
+            <button type="submit">Issue Book</button>
+        </form>
+    </article>
+
+    <article class="table-card">
+        <h2>Issue History</h2>
+        <?php if ($issueList && $issueList->num_rows > 0): ?>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Student</th>
+                            <th>Book</th>
+                            <th>Dates</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php while ($issue = $issueList->fetch_assoc()): ?>
+                            <tr>
+                                <td>
+                                    <strong><?php echo e($issue["name"]); ?></strong>
+                                    <div class="muted"><?php echo e($issue["department"]); ?></div>
+                                </td>
+                                <td>
+                                    <strong><?php echo e($issue["book_name"]); ?></strong>
+                                    <div class="muted"><?php echo e($issue["author"]); ?></div>
+                                </td>
+                                <td>
+                                    <div>Issued: <?php echo e(format_date_label($issue["issue_date"])); ?></div>
+                                    <div>Due: <?php echo e(format_date_label($issue["expected_return_date"])); ?></div>
+                                    <div>Returned: <?php echo e(format_date_label($issue["actual_return_date"])); ?></div>
+                                </td>
+                                <td><span class="<?php echo e(get_status_badge_class($issue["status"])); ?>"><?php echo e(ucfirst($issue["status"])); ?></span></td>
+                                <td>
+                                    <div class="action-group">
+                                        <a class="btn-light" href="edit_issue.php?id=<?php echo (int) $issue["issue_id"]; ?>">Edit</a>
+                                        <a class="btn-danger" href="delete_issue.php?id=<?php echo (int) $issue["issue_id"]; ?>" onclick="return confirm('Delete this issue record?');">Delete</a>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
+            </div>
         <?php else: ?>
-            <p class="empty-state">No circulation records are available.</p>
+            <?php render_empty_state("No circulation records", "Issue a book to create the first circulation entry."); ?>
         <?php endif; ?>
-    </div>
+    </article>
 </section>
 
 <?php require_once "../includes/footer.php"; ?>

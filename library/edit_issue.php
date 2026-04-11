@@ -1,63 +1,102 @@
 <?php
-require_once "../db_connect.php";
+define("APP_BASE_PATH", "../");
+require_once __DIR__ . "/../includes/app.php";
+require_login();
 
 $pageTitle = "Edit Issue";
+$pageKey = "library";
 $basePath = "../";
 $errorMessage = "";
-$issueId = isset($_GET["id"]) ? (int) $_GET["id"] : 0;
-$issue = null;
+$issueId = (int) ($_GET["id"] ?? 0);
 
 if ($issueId <= 0) {
-    header("Location: issue_book.php?status=invalid");
-    exit;
+    set_flash("error", "Invalid issue record.");
+    redirect_to("issue_book.php");
 }
 
-try {
-    if ($_SERVER["REQUEST_METHOD"] === "POST") {
-        $issueDate = $_POST["issue_date"] ?? "";
-        $returnDate = $_POST["return_date"] ?? "";
+$stmt = $conn->prepare("
+    SELECT
+        book_issue.*,
+        students.name,
+        students.department,
+        library_books.book_name,
+        library_books.author
+    FROM book_issue
+    INNER JOIN students ON students.student_id = book_issue.student_id
+    INNER JOIN library_books ON library_books.book_id = book_issue.book_id
+    WHERE book_issue.issue_id = ?
+");
+$stmt->bind_param("i", $issueId);
+$stmt->execute();
+$issue = $stmt->get_result()->fetch_assoc();
+$stmt->close();
 
-        if ($issueDate === "" || $returnDate === "") {
-            $errorMessage = "Please provide both issue and return dates.";
-        } elseif ($returnDate < $issueDate) {
-            $errorMessage = "Return date cannot be earlier than issue date.";
-        } else {
-            $updateStmt = $conn->prepare("UPDATE book_issue SET issue_date = ?, return_date = ? WHERE issue_id = ?");
-            $updateStmt->bind_param("ssi", $issueDate, $returnDate, $issueId);
+if (!$issue) {
+    set_flash("error", "Issue record not found.");
+    redirect_to("issue_book.php");
+}
+
+require_college_access((int) $issue["college_id"], "issue_book.php");
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $issueDate = $_POST["issue_date"] ?? "";
+    $expectedReturnDate = $_POST["expected_return_date"] ?? "";
+    $status = $_POST["status"] ?? "issued";
+    $actualReturnDate = $_POST["actual_return_date"] ?? null;
+    $actualReturnDate = $actualReturnDate === "" ? null : $actualReturnDate;
+
+    if ($issueDate === "" || $expectedReturnDate === "") {
+        $errorMessage = "Issue date and expected return date are required.";
+    } elseif ($expectedReturnDate < $issueDate) {
+        $errorMessage = "Expected return date cannot be earlier than issue date.";
+    } elseif ($status === "returned" && (!$actualReturnDate || $actualReturnDate < $issueDate)) {
+        $errorMessage = "Returned books need a valid return date.";
+    } else {
+        $conn->begin_transaction();
+        try {
+            $wasIssued = $issue["status"] === "issued";
+            $isNowReturned = $status === "returned";
+            $isNowIssued = $status === "issued";
+            $bookId = (int) $issue["book_id"];
+
+            $updateStmt = $conn->prepare("
+                UPDATE book_issue
+                SET issue_date = ?, expected_return_date = ?, actual_return_date = ?, status = ?
+                WHERE issue_id = ?
+            ");
+            $updateStmt->bind_param("ssssi", $issueDate, $expectedReturnDate, $actualReturnDate, $status, $issueId);
             $updateStmt->execute();
             $updateStmt->close();
 
-            header("Location: issue_book.php?status=updated");
-            exit;
+            if ($wasIssued && $isNowReturned) {
+                $bookUpdate = $conn->prepare("UPDATE library_books SET available_copies = available_copies + 1 WHERE book_id = ?");
+                $bookUpdate->bind_param("i", $bookId);
+                $bookUpdate->execute();
+                $bookUpdate->close();
+            } elseif (!$wasIssued && $isNowIssued) {
+                $checkBook = $conn->prepare("SELECT available_copies FROM library_books WHERE book_id = ?");
+                $checkBook->bind_param("i", $bookId);
+                $checkBook->execute();
+                $bookState = $checkBook->get_result()->fetch_assoc();
+                $checkBook->close();
+                if ((int) ($bookState["available_copies"] ?? 0) <= 0) {
+                    throw new RuntimeException("No copies are available to mark this issue as active.");
+                }
+                $bookUpdate = $conn->prepare("UPDATE library_books SET available_copies = available_copies - 1 WHERE book_id = ?");
+                $bookUpdate->bind_param("i", $bookId);
+                $bookUpdate->execute();
+                $bookUpdate->close();
+            }
+
+            sync_book_status($conn, $bookId);
+            $conn->commit();
+            set_flash("success", "Issue record updated successfully.");
+            redirect_to("issue_book.php");
+        } catch (Throwable $throwable) {
+            $conn->rollback();
+            $errorMessage = $throwable->getMessage() ?: "Unable to update this issue record.";
         }
     }
-
-    $stmt = $conn->prepare("
-        SELECT
-            book_issue.issue_id,
-            book_issue.issue_date,
-            book_issue.return_date,
-            students.name,
-            students.department,
-            library_books.book_name,
-            library_books.author
-        FROM book_issue
-        INNER JOIN students ON book_issue.student_id = students.student_id
-        INNER JOIN library_books ON book_issue.book_id = library_books.book_id
-        WHERE book_issue.issue_id = ?
-    ");
-    $stmt->bind_param("i", $issueId);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $issue = $result->fetch_assoc();
-    $stmt->close();
-
-    if (!$issue) {
-        header("Location: issue_book.php?status=invalid");
-        exit;
-    }
-} catch (mysqli_sql_exception $exception) {
-    $errorMessage = "Unable to load or update the issue record.";
 }
 
 require_once "../includes/header.php";
@@ -65,55 +104,52 @@ require_once "../includes/header.php";
 
 <section class="page-heading">
     <h1>Edit Issue Record</h1>
-    <p>Update circulation dates for the selected book issue record.</p>
+    <p>Update due dates and switch issue status between issued and returned.</p>
 </section>
 
-<section class="two-column issue-layout">
-    <div class="table-card issue-panel">
+<section class="split-layout">
+    <article class="table-card">
         <h2>Issue Details</h2>
         <table>
             <tbody>
-                <tr>
-                    <th>Student</th>
-                    <td><?php echo e($issue["name"] ?? ""); ?></td>
-                </tr>
-                <tr>
-                    <th>Department</th>
-                    <td><?php echo e($issue["department"] ?? ""); ?></td>
-                </tr>
-                <tr>
-                    <th>Book</th>
-                    <td><?php echo e($issue["book_name"] ?? ""); ?></td>
-                </tr>
-                <tr>
-                    <th>Author</th>
-                    <td><?php echo e($issue["author"] ?? ""); ?></td>
-                </tr>
+                <tr><th>Student</th><td><?php echo e($issue["name"]); ?></td></tr>
+                <tr><th>Department</th><td><?php echo e($issue["department"]); ?></td></tr>
+                <tr><th>Book</th><td><?php echo e($issue["book_name"]); ?></td></tr>
+                <tr><th>Author</th><td><?php echo e($issue["author"]); ?></td></tr>
             </tbody>
         </table>
-    </div>
-
-    <div class="form-card issue-panel">
-        <h2>Update Dates</h2>
-
-        <?php if ($errorMessage !== ""): ?>
-            <div class="error"><?php echo e($errorMessage); ?></div>
-        <?php endif; ?>
-
+    </article>
+    <article class="form-card">
+        <?php if ($errorMessage !== ""): ?><div class="error"><?php echo e($errorMessage); ?></div><?php endif; ?>
         <form method="post">
-            <div>
-                <label for="issue_date">Issue Date</label>
-                <input type="date" id="issue_date" name="issue_date" value="<?php echo e($_POST["issue_date"] ?? ($issue["issue_date"] ?? "")); ?>">
+            <div class="form-grid">
+                <div>
+                    <label for="issue_date">Issue Date</label>
+                    <input type="date" id="issue_date" name="issue_date" value="<?php echo e($_POST["issue_date"] ?? $issue["issue_date"]); ?>" required>
+                </div>
+                <div>
+                    <label for="expected_return_date">Expected Return Date</label>
+                    <input type="date" id="expected_return_date" name="expected_return_date" value="<?php echo e($_POST["expected_return_date"] ?? $issue["expected_return_date"]); ?>" required>
+                </div>
+                <div>
+                    <label for="status">Status</label>
+                    <?php $selectedStatus = $_POST["status"] ?? $issue["status"]; ?>
+                    <select id="status" name="status">
+                        <option value="issued" <?php echo $selectedStatus === "issued" ? "selected" : ""; ?>>Issued</option>
+                        <option value="returned" <?php echo $selectedStatus === "returned" ? "selected" : ""; ?>>Returned</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="actual_return_date">Actual Return Date</label>
+                    <input type="date" id="actual_return_date" name="actual_return_date" value="<?php echo e($_POST["actual_return_date"] ?? ($issue["actual_return_date"] ?? "")); ?>">
+                </div>
             </div>
-
-            <div>
-                <label for="return_date">Return Date</label>
-                <input type="date" id="return_date" name="return_date" value="<?php echo e($_POST["return_date"] ?? ($issue["return_date"] ?? "")); ?>">
+            <div class="action-group">
+                <button type="submit">Update Issue</button>
+                <a class="btn-light" href="issue_book.php">Back</a>
             </div>
-
-            <button type="submit">Update Issue Record</button>
         </form>
-    </div>
+    </article>
 </section>
 
 <?php require_once "../includes/footer.php"; ?>

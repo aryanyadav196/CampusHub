@@ -1,51 +1,57 @@
 <?php
-require_once "../db_connect.php";
+define("APP_BASE_PATH", "../");
+require_once __DIR__ . "/../includes/app.php";
+require_login();
 
 $pageTitle = "Edit Book";
+$pageKey = "library";
 $basePath = "../";
-$successMessage = "";
 $errorMessage = "";
-$bookId = isset($_GET["id"]) ? (int) $_GET["id"] : 0;
-$book = null;
+$bookId = (int) ($_GET["id"] ?? 0);
+$colleges = get_colleges($conn);
 
 if ($bookId <= 0) {
-    header("Location: view_books.php?status=invalid");
-    exit;
+    set_flash("error", "Invalid book record.");
+    redirect_to("view_books.php");
 }
 
-try {
-    if ($_SERVER["REQUEST_METHOD"] === "POST") {
-        $bookName = trim($_POST["book_name"] ?? "");
-        $author = trim($_POST["author"] ?? "");
-        $category = trim($_POST["category"] ?? "");
-        $availableCopies = (int) ($_POST["available_copies"] ?? 0);
+$stmt = $conn->prepare("SELECT * FROM library_books WHERE book_id = ?");
+$stmt->bind_param("i", $bookId);
+$stmt->execute();
+$book = $stmt->get_result()->fetch_assoc();
+$stmt->close();
 
-        if ($bookName === "" || $author === "" || $category === "" || $availableCopies < 0) {
-            $errorMessage = "Please enter valid book details.";
-        } else {
-            $updateStmt = $conn->prepare("UPDATE library_books SET book_name = ?, author = ?, category = ?, available_copies = ? WHERE book_id = ?");
-            $updateStmt->bind_param("sssii", $bookName, $author, $category, $availableCopies, $bookId);
-            $updateStmt->execute();
-            $updateStmt->close();
+if (!$book) {
+    set_flash("error", "Book record not found.");
+    redirect_to("view_books.php");
+}
 
-            header("Location: view_books.php?status=updated");
-            exit;
-        }
+require_college_access((int) $book["college_id"], "view_books.php");
+$selectedCollegeId = get_selected_college_id($_POST, (int) $book["college_id"]);
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $bookName = trim($_POST["book_name"] ?? "");
+    $author = trim($_POST["author"] ?? "");
+    $category = trim($_POST["category"] ?? "");
+    $totalCopies = (int) ($_POST["total_copies"] ?? 0);
+    $availableCopies = (int) ($_POST["available_copies"] ?? 0);
+    $selectedCollegeId = get_selected_college_id($_POST, (int) $book["college_id"]);
+
+    if ($bookName === "" || $author === "" || $category === "" || $totalCopies <= 0 || $availableCopies < 0 || $availableCopies > $totalCopies || $selectedCollegeId <= 0) {
+        $errorMessage = "Please provide valid catalog details. Available copies cannot exceed total copies.";
+    } else {
+        $updateStmt = $conn->prepare("
+            UPDATE library_books
+            SET college_id = ?, book_name = ?, author = ?, category = ?, total_copies = ?, available_copies = ?
+            WHERE book_id = ?
+        ");
+        $updateStmt->bind_param("isssiii", $selectedCollegeId, $bookName, $author, $category, $totalCopies, $availableCopies, $bookId);
+        $updateStmt->execute();
+        $updateStmt->close();
+        sync_book_status($conn, $bookId);
+        set_flash("success", "Book record updated successfully.");
+        redirect_to("view_books.php");
     }
-
-    $stmt = $conn->prepare("SELECT book_id, book_name, author, category, available_copies FROM library_books WHERE book_id = ?");
-    $stmt->bind_param("i", $bookId);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $book = $result->fetch_assoc();
-    $stmt->close();
-
-    if (!$book) {
-        header("Location: view_books.php?status=invalid");
-        exit;
-    }
-} catch (mysqli_sql_exception $exception) {
-    $errorMessage = "Unable to load or update the book record.";
 }
 
 require_once "../includes/header.php";
@@ -53,40 +59,39 @@ require_once "../includes/header.php";
 
 <section class="page-heading">
     <h1>Edit Book</h1>
-    <p>Update the catalog details for this library record.</p>
+    <p>Update core catalog details, inventory levels, and college ownership.</p>
 </section>
 
 <section class="form-card">
-    <?php if ($successMessage !== ""): ?>
-        <div class="message"><?php echo e($successMessage); ?></div>
-    <?php endif; ?>
-
-    <?php if ($errorMessage !== ""): ?>
-        <div class="error"><?php echo e($errorMessage); ?></div>
-    <?php endif; ?>
-
+    <?php if ($errorMessage !== ""): ?><div class="error"><?php echo e($errorMessage); ?></div><?php endif; ?>
     <form method="post">
-        <div>
-            <label for="book_name">Book Name</label>
-            <input type="text" id="book_name" name="book_name" value="<?php echo e($_POST["book_name"] ?? ($book["book_name"] ?? "")); ?>">
+        <div class="form-grid">
+            <?php render_college_select($colleges, $selectedCollegeId); ?>
+            <div>
+                <label for="book_name">Book Name</label>
+                <input type="text" id="book_name" name="book_name" value="<?php echo e($_POST["book_name"] ?? $book["book_name"]); ?>" required>
+            </div>
+            <div>
+                <label for="author">Author</label>
+                <input type="text" id="author" name="author" value="<?php echo e($_POST["author"] ?? $book["author"]); ?>" required>
+            </div>
+            <div>
+                <label for="category">Category</label>
+                <input type="text" id="category" name="category" value="<?php echo e($_POST["category"] ?? $book["category"]); ?>" required>
+            </div>
+            <div>
+                <label for="total_copies">Total Copies</label>
+                <input type="number" id="total_copies" name="total_copies" min="1" value="<?php echo e($_POST["total_copies"] ?? $book["total_copies"]); ?>" required>
+            </div>
+            <div>
+                <label for="available_copies">Available Copies</label>
+                <input type="number" id="available_copies" name="available_copies" min="0" value="<?php echo e($_POST["available_copies"] ?? $book["available_copies"]); ?>" required>
+            </div>
         </div>
-
-        <div>
-            <label for="author">Author Name</label>
-            <input type="text" id="author" name="author" value="<?php echo e($_POST["author"] ?? ($book["author"] ?? "")); ?>">
+        <div class="action-group">
+            <button type="submit">Update Book</button>
+            <a class="btn-light" href="view_books.php">Back</a>
         </div>
-
-        <div>
-            <label for="category">Category</label>
-            <input type="text" id="category" name="category" value="<?php echo e($_POST["category"] ?? ($book["category"] ?? "")); ?>">
-        </div>
-
-        <div>
-            <label for="available_copies">Available Copies</label>
-            <input type="number" id="available_copies" name="available_copies" min="0" value="<?php echo e($_POST["available_copies"] ?? ($book["available_copies"] ?? "")); ?>">
-        </div>
-
-        <button type="submit">Update Book</button>
     </form>
 </section>
 

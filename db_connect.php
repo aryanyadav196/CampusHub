@@ -23,4 +23,3 @@ if (!function_exists("e")) {
         return htmlspecialchars((string) ($value ?? ""), ENT_QUOTES, "UTF-8");
     }
 }
-?>

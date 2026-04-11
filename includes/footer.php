@@ -1,8 +1,9 @@
-    </main>
-    <footer class="site-footer">
-        <div class="container">
-            <p>&copy; <?php echo date("Y"); ?> CampusHub. Campus operations platform.</p>
-        </div>
-    </footer>
+        </main>
+        <footer class="site-footer">
+            <p>&copy; <?php echo date("Y"); ?> CampusHub. Multi-college campus operations.</p>
+        </footer>
+    </div>
+</div>
+<script src="<?php echo e($basePath); ?>assets/app.js"></script>
 </body>
 </html>

@@ -1,49 +1,59 @@
 <?php
-require_once "../db_connect.php";
+define("APP_BASE_PATH", "../");
+require_once __DIR__ . "/../includes/app.php";
+require_login();
 
 $pageTitle = "Edit Event";
+$pageKey = "events";
 $basePath = "../";
 $errorMessage = "";
-$eventId = isset($_GET["id"]) ? (int) $_GET["id"] : 0;
-$event = null;
+$eventId = (int) ($_GET["id"] ?? 0);
+$colleges = get_colleges($conn);
 
 if ($eventId <= 0) {
-    header("Location: view_events.php?status=invalid");
-    exit;
+    set_flash("error", "Invalid event record.");
+    redirect_to("view_events.php");
 }
 
-try {
-    if ($_SERVER["REQUEST_METHOD"] === "POST") {
-        $eventName = trim($_POST["event_name"] ?? "");
-        $eventDate = $_POST["event_date"] ?? "";
-        $location = trim($_POST["location"] ?? "");
+$stmt = $conn->prepare("SELECT * FROM events WHERE event_id = ?");
+$stmt->bind_param("i", $eventId);
+$stmt->execute();
+$event = $stmt->get_result()->fetch_assoc();
+$stmt->close();
 
-        if ($eventName === "" || $eventDate === "" || $location === "") {
-            $errorMessage = "Please fill in all event details.";
-        } else {
-            $updateStmt = $conn->prepare("UPDATE events SET event_name = ?, event_date = ?, location = ? WHERE event_id = ?");
-            $updateStmt->bind_param("sssi", $eventName, $eventDate, $location, $eventId);
-            $updateStmt->execute();
-            $updateStmt->close();
+if (!$event) {
+    set_flash("error", "Event not found.");
+    redirect_to("view_events.php");
+}
 
-            header("Location: view_events.php?status=updated");
-            exit;
-        }
+require_college_access((int) $event["college_id"], "view_events.php");
+$selectedCollegeId = get_selected_college_id($_POST, (int) $event["college_id"]);
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $eventTitle = trim($_POST["event_title"] ?? "");
+    $eventDate = $_POST["event_date"] ?? "";
+    $venue = trim($_POST["venue"] ?? "");
+    $description = trim($_POST["description"] ?? "");
+    $selectedCollegeId = get_selected_college_id($_POST, (int) $event["college_id"]);
+    $upload = upload_image("poster_image", "events", $event["poster_image"] ?? null);
+
+    if ($eventTitle === "" || $eventDate === "" || $venue === "" || $description === "" || $selectedCollegeId <= 0) {
+        $errorMessage = "Please fill in all event details.";
+    } elseif ($upload["error"] !== "") {
+        $errorMessage = $upload["error"];
+    } else {
+        $posterPath = $upload["path"];
+        $updateStmt = $conn->prepare("
+            UPDATE events
+            SET college_id = ?, event_title = ?, event_date = ?, venue = ?, description = ?, poster_image = ?
+            WHERE event_id = ?
+        ");
+        $updateStmt->bind_param("isssssi", $selectedCollegeId, $eventTitle, $eventDate, $venue, $description, $posterPath, $eventId);
+        $updateStmt->execute();
+        $updateStmt->close();
+        set_flash("success", "Event updated successfully.");
+        redirect_to("view_events.php");
     }
-
-    $stmt = $conn->prepare("SELECT event_id, event_name, event_date, location FROM events WHERE event_id = ?");
-    $stmt->bind_param("i", $eventId);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $event = $result->fetch_assoc();
-    $stmt->close();
-
-    if (!$event) {
-        header("Location: view_events.php?status=invalid");
-        exit;
-    }
-} catch (mysqli_sql_exception $exception) {
-    $errorMessage = "Unable to load or update the event.";
 }
 
 require_once "../includes/header.php";
@@ -51,31 +61,39 @@ require_once "../includes/header.php";
 
 <section class="page-heading">
     <h1>Edit Event</h1>
-    <p>Update the event schedule and location details.</p>
+    <p>Update event schedule, venue, description, and poster image.</p>
 </section>
 
 <section class="form-card">
-    <?php if ($errorMessage !== ""): ?>
-        <div class="error"><?php echo e($errorMessage); ?></div>
-    <?php endif; ?>
-
-    <form method="post">
-        <div>
-            <label for="event_name">Event Name</label>
-            <input type="text" id="event_name" name="event_name" value="<?php echo e($_POST["event_name"] ?? ($event["event_name"] ?? "")); ?>">
+    <?php if ($errorMessage !== ""): ?><div class="error"><?php echo e($errorMessage); ?></div><?php endif; ?>
+    <form method="post" enctype="multipart/form-data">
+        <div class="form-grid">
+            <?php render_college_select($colleges, $selectedCollegeId); ?>
+            <div>
+                <label for="event_title">Event Title</label>
+                <input type="text" id="event_title" name="event_title" value="<?php echo e($_POST["event_title"] ?? $event["event_title"]); ?>" required>
+            </div>
+            <div>
+                <label for="event_date">Event Date</label>
+                <input type="date" id="event_date" name="event_date" value="<?php echo e($_POST["event_date"] ?? $event["event_date"]); ?>" required>
+            </div>
+            <div>
+                <label for="venue">Venue</label>
+                <input type="text" id="venue" name="venue" value="<?php echo e($_POST["venue"] ?? $event["venue"]); ?>" required>
+            </div>
+            <div>
+                <label for="poster_image">Poster Image</label>
+                <input type="file" id="poster_image" name="poster_image" accept="image/*">
+            </div>
+            <div style="grid-column: 1 / -1;">
+                <label for="description">Description</label>
+                <textarea id="description" name="description" required><?php echo e($_POST["description"] ?? $event["description"]); ?></textarea>
+            </div>
         </div>
-
-        <div>
-            <label for="event_date">Event Date</label>
-            <input type="date" id="event_date" name="event_date" value="<?php echo e($_POST["event_date"] ?? ($event["event_date"] ?? "")); ?>">
+        <div class="action-group">
+            <button type="submit">Update Event</button>
+            <a class="btn-light" href="view_events.php">Back</a>
         </div>
-
-        <div>
-            <label for="location">Location</label>
-            <input type="text" id="location" name="location" value="<?php echo e($_POST["location"] ?? ($event["location"] ?? "")); ?>">
-        </div>
-
-        <button type="submit">Update Event</button>
     </form>
 </section>
 
