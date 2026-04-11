@@ -1,7 +1,7 @@
 <?php
 $host = "localhost";
 $username = "root";
-$password = "password";
+$password = "";
 $database = getenv("DB_NAME") ?: "campushub_db";
 
 if ($password === false) {
