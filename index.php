@@ -7,31 +7,19 @@ $pageTitle = "Dashboard";
 $pageKey = "dashboard";
 $basePath = "";
 $loadCharts = true;
-$scopeClause = is_admin() ? "" : " WHERE college_id = " . current_college_id();
-$issueClause = is_admin() ? " WHERE status = 'issued'" : " WHERE college_id = " . current_college_id() . " AND status = 'issued'";
-$eventClause = is_admin() ? " WHERE event_date >= CURDATE()" : " WHERE college_id = " . current_college_id() . " AND event_date >= CURDATE()";
+$scopeWhere = is_admin() ? "" : " WHERE college_id = " . current_college_id();
+$scopeAnd = is_admin() ? "" : " AND college_id = " . current_college_id();
 
-$studentCount = (int) (($conn->query("SELECT COUNT(*) AS total FROM students" . $scopeClause)?->fetch_assoc()["total"]) ?? 0);
-$bookCount = (int) (($conn->query("SELECT COUNT(*) AS total FROM library_books" . $scopeClause)?->fetch_assoc()["total"]) ?? 0);
-$issueCount = (int) (($conn->query("SELECT COUNT(*) AS total FROM book_issue" . $issueClause)?->fetch_assoc()["total"]) ?? 0);
-$upcomingEventCount = (int) (($conn->query("SELECT COUNT(*) AS total FROM events" . $eventClause)?->fetch_assoc()["total"]) ?? 0);
+$studentCount = count_table_rows($conn, "students", $scopeWhere);
+$bookCount = count_table_rows($conn, "library_books", $scopeWhere);
+$issueCount = count_table_rows($conn, "book_issue", is_admin() ? " WHERE status = 'issued'" : " WHERE status = 'issued'" . $scopeAnd);
+$upcomingEventCount = count_table_rows($conn, "events", is_admin() ? " WHERE event_date >= CURDATE()" : " WHERE event_date >= CURDATE()" . $scopeAnd);
 
-$departmentResult = $conn->query("
-    SELECT department, COUNT(*) AS total
-    FROM students
-    " . $scopeClause . "
-    GROUP BY department
-    ORDER BY total DESC, department ASC
-    LIMIT 6
-");
-$bookCategoryResult = $conn->query("
-    SELECT category, COUNT(*) AS total
-    FROM library_books
-    " . $scopeClause . "
-    GROUP BY category
-    ORDER BY total DESC, category ASC
-    LIMIT 6
-");
+$departmentResult = $conn->query("SELECT department, COUNT(*) AS total FROM students" . $scopeWhere . " GROUP BY department ORDER BY total DESC, department ASC LIMIT 6");
+$bookCategoryResult = $conn->query("SELECT category, COUNT(*) AS total FROM library_books" . $scopeWhere . " GROUP BY category ORDER BY total DESC, category ASC LIMIT 6");
+$recentStudents = $conn->query("SELECT name, department, year, profile_photo FROM students" . $scopeWhere . " ORDER BY student_id DESC LIMIT 4");
+$recentEvents = $conn->query("SELECT event_name, event_date, venue, poster_image FROM events" . (is_admin() ? "" : " WHERE college_id = " . current_college_id()) . " ORDER BY event_date ASC, event_id DESC LIMIT 3");
+$circulationSnapshot = $conn->query("SELECT book_issue.status, students.name, library_books.book_name, book_issue.expected_return_date FROM book_issue INNER JOIN students ON students.student_id = book_issue.student_id INNER JOIN library_books ON library_books.book_id = book_issue.book_id" . (is_admin() ? "" : " WHERE book_issue.college_id = " . current_college_id()) . " ORDER BY book_issue.issue_id DESC LIMIT 4");
 
 $studentChartLabels = [];
 $studentChartData = [];
@@ -51,27 +39,19 @@ if ($bookCategoryResult) {
     }
 }
 
-$recentEvents = $conn->query("
-    SELECT event_title, event_date, venue
-    FROM events
-    " . (is_admin() ? "" : " WHERE college_id = " . current_college_id()) . "
-    ORDER BY event_date ASC
-    LIMIT 4
-");
-
 require_once "includes/header.php";
 ?>
 
 <section class="hero-banner">
-    <p class="hero-kicker">Modern Campus Command Center</p>
-    <h2>Run students, library services, and events from one professional multi-college workspace.</h2>
+    <p class="hero-kicker">Operational Overview</p>
+    <h2>Keep student services, library circulation, and campus events in sync.</h2>
     <p>
-        CampusHub now supports college-based data isolation, role-based access, dark mode, analytics, and cleaner workflows designed for practical demos and real SaaS-style presentation.
+        Monitor daily activity, move between records quickly, and keep every campus unit operating from one clear interface.
     </p>
     <div class="hero-actions">
-        <a class="btn" href="students/add_student.php">Add Student</a>
+        <a class="btn" href="students/add_student.php">New Student</a>
         <a class="btn-light" href="library/issue_book.php">Issue Book</a>
-        <a class="btn-ghost" href="events/add_event.php">Create Event</a>
+        <a class="btn-ghost" href="events/add_event.php">Schedule Event</a>
     </div>
 </section>
 
@@ -79,97 +59,153 @@ require_once "includes/header.php";
     <article class="stat-card">
         <p class="stat-label">Total Students</p>
         <h3 class="stat-value"><?php echo $studentCount; ?></h3>
-        <span class="stat-trend">Student records</span>
+        <span class="stat-trend">Active profiles</span>
     </article>
     <article class="stat-card">
-        <p class="stat-label">Total Books</p>
+        <p class="stat-label">Books Cataloged</p>
         <h3 class="stat-value"><?php echo $bookCount; ?></h3>
-        <span class="stat-trend">Catalog inventory</span>
+        <span class="stat-trend">Library inventory</span>
     </article>
     <article class="stat-card">
-        <p class="stat-label">Issued Books</p>
+        <p class="stat-label">Books Issued</p>
         <h3 class="stat-value"><?php echo $issueCount; ?></h3>
-        <span class="stat-trend">Active circulation</span>
+        <span class="stat-trend">Circulation in progress</span>
     </article>
     <article class="stat-card">
         <p class="stat-label">Upcoming Events</p>
         <h3 class="stat-value"><?php echo $upcomingEventCount; ?></h3>
-        <span class="stat-trend">Scheduled soon</span>
+        <span class="stat-trend">Calendar items ahead</span>
     </article>
 </section>
 
-<section class="chart-grid section-heading">
+<section class="chart-grid" style="margin-top: 24px;">
     <article class="chart-card">
-        <h2>Students by Department</h2>
-        <p class="muted">Live distribution of registered students.</p>
+        <h2>Student Distribution</h2>
+        <p class="muted">Enrollment spread across departments.</p>
         <div class="chart-canvas-wrap">
             <canvas id="studentsChart"></canvas>
         </div>
     </article>
     <article class="chart-card">
-        <h2>Books by Category</h2>
-        <p class="muted">Library inventory grouped by category.</p>
+        <h2>Library Categories</h2>
+        <p class="muted">Book inventory grouped by category.</p>
         <div class="chart-canvas-wrap">
             <canvas id="booksChart"></canvas>
         </div>
     </article>
 </section>
 
-<section class="split-layout section-heading">
+<section class="split-layout" style="margin-top: 24px;">
     <article class="panel">
-        <h2>Quick Access</h2>
+        <div class="page-heading">
+            <div>
+                <h2>Recent Student Activity</h2>
+                <p>Recently added records and their academic track.</p>
+            </div>
+            <a class="btn-light" href="students/view_students.php">Open Directory</a>
+        </div>
         <div class="card-grid">
-            <article class="metric-card">
-                <h3 class="card-title">Students</h3>
-                <p class="muted">Manage registrations, photos, search, export, and edits.</p>
-                <div class="card-actions">
-                    <a class="btn-light" href="students/view_students.php">View</a>
-                    <a class="btn-ghost" href="students/add_student.php">Add</a>
-                </div>
-            </article>
-            <article class="metric-card">
-                <h3 class="card-title">Library</h3>
-                <p class="muted">Track books, availability, issue status, and returns.</p>
-                <div class="card-actions">
-                    <a class="btn-light" href="library/view_books.php">Catalog</a>
-                    <a class="btn-ghost" href="library/issue_book.php">Circulation</a>
-                </div>
-            </article>
-            <article class="metric-card">
-                <h3 class="card-title">Events</h3>
-                <p class="muted">Publish event cards, posters, venues, and schedules.</p>
-                <div class="card-actions">
-                    <a class="btn-light" href="events/view_events.php">Calendar</a>
-                    <a class="btn-ghost" href="events/add_event.php">Create</a>
-                </div>
-            </article>
+            <?php if ($recentStudents && $recentStudents->num_rows > 0): ?>
+                <?php while ($student = $recentStudents->fetch_assoc()): ?>
+                    <article class="metric-card">
+                        <div class="profile-cell">
+                            <?php if (!empty($student["profile_photo"])): ?>
+                                <img class="avatar large" src="<?php echo e($basePath . $student["profile_photo"]); ?>" alt="<?php echo e($student["name"]); ?>">
+                            <?php else: ?>
+                                <div class="avatar large"></div>
+                            <?php endif; ?>
+                            <div>
+                                <strong><?php echo e($student["name"]); ?></strong>
+                                <div class="muted"><?php echo e($student["department"]); ?></div>
+                            </div>
+                        </div>
+                        <span class="chip" style="margin-top: 16px;"><?php echo e($student["year_level"]); ?></span>
+                    </article>
+                <?php endwhile; ?>
+            <?php else: ?>
+                <?php render_empty_state("No student records yet", "Create the first student profile to populate the dashboard.", "students/add_student.php", "Add Student"); ?>
+            <?php endif; ?>
         </div>
     </article>
 
     <article class="panel">
-        <h2>Upcoming Schedule</h2>
-        <?php if ($recentEvents && $recentEvents->num_rows > 0): ?>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Event</th>
-                        <th>Date</th>
-                        <th>Venue</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php while ($event = $recentEvents->fetch_assoc()): ?>
+        <div class="page-heading">
+            <div>
+                <h2>Calendar Preview</h2>
+                <p>Next events scheduled across the campus calendar.</p>
+            </div>
+            <a class="btn-light" href="events/view_events.php">View Calendar</a>
+        </div>
+        <div class="event-grid" style="grid-template-columns: 1fr;">
+            <?php if ($recentEvents && $recentEvents->num_rows > 0): ?>
+                <?php while ($event = $recentEvents->fetch_assoc()): ?>
+                    <article class="event-card">
+                        <div class="event-card-image">
+                            <?php if (!empty($event["poster_image"])): ?>
+                                <img src="<?php echo e($basePath . $event["poster_image"]); ?>" alt="<?php echo e($event["event_title"]); ?>">
+                            <?php endif; ?>
+                        </div>
+                        <div>
+                            <h2><?php echo e($event["event_title"]); ?></h2>
+                            <div class="event-meta">
+                                <span class="chip"><?php echo e(format_date_label($event["event_date"])); ?></span>
+                                <span class="chip"><?php echo e($event["venue"]); ?></span>
+                            </div>
+                        </div>
+                    </article>
+                <?php endwhile; ?>
+            <?php else: ?>
+                <?php render_empty_state("No upcoming events", "Add an event to surface it here.", "events/add_event.php", "Create Event"); ?>
+            <?php endif; ?>
+        </div>
+    </article>
+</section>
+
+<section class="split-layout" style="margin-top: 24px;">
+    <article class="table-card">
+        <div class="page-heading">
+            <div>
+                <h2>Circulation Snapshot</h2>
+                <p>Current issue records and due dates.</p>
+            </div>
+            <a class="btn-light" href="library/issue_book.php">Open Circulation</a>
+        </div>
+        <?php if ($circulationSnapshot && $circulationSnapshot->num_rows > 0): ?>
+            <div class="table-responsive">
+                <table>
+                    <thead>
                         <tr>
-                            <td><?php echo e($event["event_title"]); ?></td>
-                            <td><?php echo e(format_date_label($event["event_date"])); ?></td>
-                            <td><?php echo e($event["venue"]); ?></td>
+                            <th>Student</th>
+                            <th>Book</th>
+                            <th>Due Date</th>
+                            <th>Status</th>
                         </tr>
-                    <?php endwhile; ?>
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        <?php while ($item = $circulationSnapshot->fetch_assoc()): ?>
+                            <tr>
+                                <td><?php echo e($item["name"]); ?></td>
+                                <td><?php echo e($item["book_name"]); ?></td>
+                                <td><?php echo e(format_date_label($item["expected_return_date"])); ?></td>
+                                <td><span class="<?php echo e(get_status_badge_class($item["status"])); ?>"><?php echo e(ucfirst($item["status"])); ?></span></td>
+                            </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
+            </div>
         <?php else: ?>
-            <?php render_empty_state("No upcoming events", "Create an event to populate the campus calendar."); ?>
+            <?php render_empty_state("No circulation records", "Issue a book to see recent activity.", "library/issue_book.php", "Issue Book"); ?>
         <?php endif; ?>
+    </article>
+
+    <article class="insight-card">
+        <h2>Operations Focus</h2>
+        <ul class="insight-list">
+            <li>Use the student directory to search, edit, export, and manage profile images.</li>
+            <li>Track inventory from the library catalog and mark circulation records as returned.</li>
+            <li>Publish events with posters so the schedule feels editorial rather than administrative.</li>
+            <li>Open the assistant from the bottom-right corner for quick questions about live data.</li>
+        </ul>
     </article>
 </section>
 
@@ -183,12 +219,15 @@ if (studentsChartCtx && window.Chart) {
             datasets: [{
                 label: 'Students',
                 data: <?php echo json_encode($studentChartData); ?>,
-                backgroundColor: ['#2563eb', '#0ea5e9', '#14b8a6', '#f59e0b', '#ec4899', '#8b5cf6'],
-                borderRadius: 10
+                backgroundColor: ['#1e66f5', '#12b0a2', '#4f46e5', '#e8882e', '#d9475c', '#0f9f62'],
+                borderRadius: 12
             }]
         },
         options: {
             maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true }
+            },
             plugins: { legend: { display: false } }
         }
     });
@@ -202,7 +241,7 @@ if (booksChartCtx && window.Chart) {
             labels: <?php echo json_encode($bookChartLabels); ?>,
             datasets: [{
                 data: <?php echo json_encode($bookChartData); ?>,
-                backgroundColor: ['#1d4ed8', '#0284c7', '#0f766e', '#ca8a04', '#be185d', '#6d28d9']
+                backgroundColor: ['#1e66f5', '#12b0a2', '#4f46e5', '#e8882e', '#d9475c', '#0f9f62']
             }]
         },
         options: {

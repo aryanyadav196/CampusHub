@@ -7,85 +7,80 @@ $pageTitle = "Students";
 $pageKey = "students";
 $basePath = "../";
 $perPage = 8;
-$page = max(1, (int) ($_GET["page"] ?? 1));
-$search = trim($_GET["q"] ?? "");
-$department = trim($_GET["department"] ?? "");
-$collegeFilter = is_admin() ? (int) ($_GET["college_id"] ?? 0) : current_college_id();
+$page = max(1, (int) ($_GET['page'] ?? 1));
+$search = trim($_GET['q'] ?? '');
+$department = trim($_GET['department'] ?? '');
+$collegeFilter = is_admin() ? (int) ($_GET['college_id'] ?? 0) : current_college_id();
 $colleges = get_colleges($conn);
 
 $where = [];
-$types = "";
+$types = '';
 $params = [];
 
-if ($search !== "") {
-    $where[] = "(students.name LIKE ? OR students.email LIKE ? OR students.phone LIKE ?)";
-    $types .= "sss";
-    $like = "%" . $search . "%";
+if ($search !== '') {
+    $where[] = '(students.name LIKE ? OR students.email LIKE ? OR students.phone LIKE ?)';
+    $types .= 'sss';
+    $like = '%' . $search . '%';
     array_push($params, $like, $like, $like);
 }
-
-if ($department !== "") {
-    $where[] = "students.department = ?";
-    $types .= "s";
+if ($department !== '') {
+    $where[] = 'students.department = ?';
+    $types .= 's';
     $params[] = $department;
 }
-
 if ($collegeFilter > 0) {
-    $where[] = "students.college_id = ?";
-    $types .= "i";
+    $where[] = 'students.college_id = ?';
+    $types .= 'i';
     $params[] = $collegeFilter;
 }
 
-$whereSql = $where ? " WHERE " . implode(" AND ", $where) : "";
-$countSql = "SELECT COUNT(*) AS total FROM students" . $whereSql;
-$countStmt = $conn->prepare($countSql);
-if ($types !== "") {
-    $countStmt->bind_param($types, ...$params);
-}
-$countStmt->execute();
-$totalRecords = (int) ($countStmt->get_result()->fetch_assoc()["total"] ?? 0);
-$countStmt->close();
+$whereSql = $where ? ' WHERE ' . implode(' AND ', $where) : '';
+$totalRecords = count_table_rows($conn, 'students', $whereSql, $types, $params);
 $totalPages = max(1, (int) ceil($totalRecords / $perPage));
 $page = min($page, $totalPages);
 $offset = ($page - 1) * $perPage;
 
-$dataSql = "
-    SELECT students.*, colleges.college_name
-    FROM students
-    LEFT JOIN colleges ON colleges.college_id = students.college_id
-    " . $whereSql . "
-    ORDER BY students.student_id DESC
-    LIMIT ? OFFSET ?
-";
+$dataSql = "SELECT students.*, colleges.college_name FROM students LEFT JOIN colleges ON colleges.college_id = students.college_id {$whereSql} ORDER BY students.student_id DESC LIMIT ? OFFSET ?";
 $dataStmt = $conn->prepare($dataSql);
-$dataTypes = $types . "ii";
+$dataTypes = $types . 'ii';
 $dataParams = [...$params, $perPage, $offset];
 $dataStmt->bind_param($dataTypes, ...$dataParams);
 $dataStmt->execute();
 $result = $dataStmt->get_result();
 
-$deptResult = $conn->query("SELECT DISTINCT department FROM students ORDER BY department ASC");
-$departments = $deptResult ? $deptResult->fetch_all(MYSQLI_ASSOC) : [];
+$deptWhere = [];
+$deptTypes = '';
+$deptParams = [];
+if ($collegeFilter > 0) {
+    $deptWhere[] = 'college_id = ?';
+    $deptTypes .= 'i';
+    $deptParams[] = $collegeFilter;
+} elseif (!is_admin()) {
+    $deptWhere[] = 'college_id = ?';
+    $deptTypes .= 'i';
+    $deptParams[] = current_college_id();
+}
+$deptSql = 'SELECT DISTINCT department FROM students' . ($deptWhere ? ' WHERE ' . implode(' AND ', $deptWhere) : '') . ' ORDER BY department ASC';
+$deptStmt = $conn->prepare($deptSql);
+if ($deptTypes !== '') {
+    $deptStmt->bind_param($deptTypes, ...$deptParams);
+}
+$deptStmt->execute();
+$departments = $deptStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$deptStmt->close();
 
-if (isset($_GET["export"]) && $_GET["export"] === "csv") {
-    $exportSql = "
-        SELECT students.student_id, students.name, students.email, students.department, students.year_level, students.phone, colleges.college_name
-        FROM students
-        LEFT JOIN colleges ON colleges.college_id = students.college_id
-        " . $whereSql . "
-        ORDER BY students.student_id DESC
-    ";
+if (isset($_GET['export']) && $_GET['export'] === 'csv') {
+    $exportSql = "SELECT students.student_id, students.name, students.email, students.department, students.year_level, students.phone, colleges.college_name FROM students LEFT JOIN colleges ON colleges.college_id = students.college_id {$whereSql} ORDER BY students.student_id DESC";
     $exportStmt = $conn->prepare($exportSql);
-    if ($types !== "") {
+    if ($types !== '') {
         $exportStmt->bind_param($types, ...$params);
     }
     $exportStmt->execute();
     $exportResult = $exportStmt->get_result();
-
-    header("Content-Type: text/csv");
-    header("Content-Disposition: attachment; filename=students_export.csv");
-    $output = fopen("php://output", "w");
-    fputcsv($output, ["ID", "Name", "Email", "Department", "Year", "Phone", "College"]);
+    header('Content-Type: text/csv');
+    header('Content-Disposition: attachment; filename=students_export.csv');
+    $output = fopen('php://output', 'w');
+    fputcsv($output, ['ID', 'Name', 'Email', 'Department', 'Year', 'Phone', 'Campus']);
     while ($row = $exportResult->fetch_assoc()) {
         fputcsv($output, $row);
     }
@@ -98,9 +93,20 @@ require_once "../includes/header.php";
 ?>
 
 <section class="page-heading">
-    <h1>Student Directory</h1>
-    <p>Search, filter, export, and manage student records with college-aware access control.</p>
+    <div>
+        <h1>Student Directory</h1>
+        <p>Search, filter, export, and maintain student records with profile images and quick actions.</p>
+    </div>
+    <div class="toolbar-actions">
+        <a class="btn" href="add_student.php">Add Student</a>
+        <a class="btn-light" href="?<?php echo e(build_query_string(array_merge($_GET, ['export' => 'csv', 'page' => null]))); ?>">Export CSV</a>
+    </div>
 </section>
+
+<nav class="module-tabs">
+    <a class="module-tab active" href="view_students.php">Directory</a>
+    <a class="module-tab" href="add_student.php">Register Student</a>
+</nav>
 
 <section class="table-card">
     <form class="filters-form" method="get">
@@ -114,21 +120,17 @@ require_once "../includes/header.php";
                 <select id="department" name="department">
                     <option value="">All Departments</option>
                     <?php foreach ($departments as $dept): ?>
-                        <option value="<?php echo e($dept["department"]); ?>" <?php echo $department === $dept["department"] ? "selected" : ""; ?>>
-                            <?php echo e($dept["department"]); ?>
-                        </option>
+                        <option value="<?php echo e($dept['department']); ?>" <?php echo $department === $dept['department'] ? 'selected' : ''; ?>><?php echo e($dept['department']); ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>
             <?php if (is_admin()): ?>
                 <div class="filter-item">
-                    <label for="college_id">College</label>
+                    <label for="college_id">Campus</label>
                     <select id="college_id" name="college_id">
-                        <option value="">All Colleges</option>
+                        <option value="">All Campuses</option>
                         <?php foreach ($colleges as $college): ?>
-                            <option value="<?php echo (int) $college["college_id"]; ?>" <?php echo $collegeFilter === (int) $college["college_id"] ? "selected" : ""; ?>>
-                                <?php echo e($college["college_name"]); ?>
-                            </option>
+                            <option value="<?php echo (int) $college['college_id']; ?>" <?php echo $collegeFilter === (int) $college['college_id'] ? 'selected' : ''; ?>><?php echo e($college['college_name']); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -136,7 +138,6 @@ require_once "../includes/header.php";
             <div class="filter-item action-group">
                 <button type="submit">Apply</button>
                 <a class="btn-light" href="view_students.php">Reset</a>
-                <a class="btn-ghost" href="?<?php echo e(http_build_query(array_merge($_GET, ["export" => "csv", "page" => null]))); ?>">Export CSV</a>
             </div>
         </div>
     </form>
@@ -150,7 +151,7 @@ require_once "../includes/header.php";
                         <th>Department</th>
                         <th>Year</th>
                         <th>Phone</th>
-                        <?php if (is_admin()): ?><th>College</th><?php endif; ?>
+                        <?php if (is_admin()): ?><th>Campus</th><?php endif; ?>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -159,25 +160,25 @@ require_once "../includes/header.php";
                         <tr>
                             <td>
                                 <div class="profile-cell">
-                                    <?php if (!empty($row["profile_photo"])): ?>
-                                        <img class="avatar" src="<?php echo e($basePath . $row["profile_photo"]); ?>" alt="<?php echo e($row["name"]); ?>">
+                                    <?php if (!empty($row['profile_photo'])): ?>
+                                        <img class="avatar" src="<?php echo e($basePath . $row['profile_photo']); ?>" alt="<?php echo e($row['name']); ?>">
                                     <?php else: ?>
                                         <div class="avatar"></div>
                                     <?php endif; ?>
                                     <div>
-                                        <strong><?php echo e($row["name"]); ?></strong>
-                                        <div class="muted"><?php echo e($row["email"]); ?></div>
+                                        <strong><?php echo e($row['name']); ?></strong>
+                                        <div class="muted"><?php echo e($row['email']); ?></div>
                                     </div>
                                 </div>
                             </td>
-                            <td><?php echo e($row["department"]); ?></td>
-                            <td><?php echo e($row["year_level"]); ?></td>
-                            <td><?php echo e($row["phone"]); ?></td>
-                            <?php if (is_admin()): ?><td><?php echo e($row["college_name"]); ?></td><?php endif; ?>
+                            <td><?php echo e($row['department']); ?></td>
+                            <td><span class="chip"><?php echo e($row['year_level']); ?></span></td>
+                            <td><?php echo e($row['phone']); ?></td>
+                            <?php if (is_admin()): ?><td><?php echo e($row['college_name']); ?></td><?php endif; ?>
                             <td>
                                 <div class="action-group">
-                                    <a class="btn-light" href="edit_student.php?id=<?php echo (int) $row["student_id"]; ?>">Edit</a>
-                                    <a class="btn-danger" href="delete_student.php?id=<?php echo (int) $row["student_id"]; ?>" onclick="return confirm('Delete this student record?');">Delete</a>
+                                    <a class="btn-light" href="edit_student.php?id=<?php echo (int) $row['student_id']; ?>">Edit</a>
+                                    <a class="btn-danger" href="delete_student.php?id=<?php echo (int) $row['student_id']; ?>" onclick="return confirm('Delete this student record?');">Delete</a>
                                 </div>
                             </td>
                         </tr>
@@ -189,13 +190,13 @@ require_once "../includes/header.php";
         <?php if ($totalPages > 1): ?>
             <div class="pagination">
                 <?php for ($i = 1; $i <= $totalPages; $i++): ?>
-                    <?php $query = $_GET; $query["page"] = $i; ?>
-                    <a class="<?php echo $i === $page ? "active" : ""; ?>" href="?<?php echo e(http_build_query($query)); ?>"><?php echo $i; ?></a>
+                    <?php $query = $_GET; $query['page'] = $i; ?>
+                    <a class="<?php echo $i === $page ? 'active' : ''; ?>" href="?<?php echo e(build_query_string($query)); ?>"><?php echo $i; ?></a>
                 <?php endfor; ?>
             </div>
         <?php endif; ?>
     <?php else: ?>
-        <?php render_empty_state("No students found", "Try adjusting the filters or add a new student profile."); ?>
+        <?php render_empty_state('No students found', 'Adjust the filters or register a new student to populate the directory.', 'add_student.php', 'Add Student'); ?>
     <?php endif; ?>
 </section>
 

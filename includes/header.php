@@ -38,7 +38,7 @@ $flashMessages = get_flash_messages();
                 <span></span>
             </button>
             <div>
-                <p class="topbar-label">Campus Management Suite</p>
+                <p class="topbar-label">Campus Operations</p>
                 <h1 class="topbar-title"><?php echo e($pageTitle); ?></h1>
             </div>
             <div class="topbar-actions">
@@ -48,7 +48,7 @@ $flashMessages = get_flash_messages();
                 </button>
                 <div class="user-pill">
                     <strong><?php echo e(current_user()["name"] ?? ""); ?></strong>
-                    <span><?php echo e(ucwords(str_replace("_", " ", current_user()["role"] ?? ""))); ?></span>
+                    <span><?php echo e(is_admin() ? "Institution Admin" : "Campus Admin"); ?></span>
                 </div>
             </div>
         </header>

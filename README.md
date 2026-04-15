@@ -35,6 +35,8 @@ campushub/
 
 ## Database Tables
 
+- `users`
+- `colleges`
 - `students`
 - `library_books`
 - `book_issue`
@@ -45,25 +47,26 @@ campushub/
 1. Copy the `campushub` folder into `C:\xampp\htdocs\`.
 2. Start Apache and MySQL from XAMPP Control Panel.
 3. Open phpMyAdmin.
-4. Import the file `campushub.sql`.
-5. Open `http://localhost/campushub/` in your browser.
+4. Create or select the database `campushub_db`.
+5. Import the file `campushub.sql` or `campushub_complete.sql`.
+6. Open `http://localhost/campushub/` in your browser.
 
 ## Database Configuration
 
-The default database connection inside `db_connect.php` is:
+The application reads these values from `.env`:
 
 - Host: `localhost`
 - Username: `root`
-- Password: empty
-- Database: `campushub`
+- Password: value of `DB_PASS`
+- Database: `campushub_db`
 
 Change these values if your MySQL setup is different.
 
 ## Technical Notes
 
-- `students`, `library_books`, `book_issue`, and `events` are separate tables.
+- `users`, `colleges`, `students`, `library_books`, `book_issue`, and `events` are required tables.
 - Primary keys are used in each table.
-- Foreign keys are used in `book_issue`.
+- Foreign keys are used between campus, student, library, event, and issue records.
 - Prepared statements are used for insert operations.
-- A `JOIN` query is used in the book issue module to display student and book data together.
-- The issue system also updates the available book quantity.
+- The login system requires the `users.password_hash` column and uses `password_verify()`.
+- The issue system updates the available book quantity and book status.

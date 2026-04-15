@@ -6,35 +6,27 @@ require_login();
 $pageTitle = "Events";
 $pageKey = "events";
 $basePath = "../";
-$search = trim($_GET["q"] ?? "");
-$collegeFilter = is_admin() ? (int) ($_GET["college_id"] ?? 0) : current_college_id();
+$search = trim($_GET['q'] ?? '');
+$collegeFilter = is_admin() ? (int) ($_GET['college_id'] ?? 0) : current_college_id();
 $colleges = get_colleges($conn);
 
 $where = [];
-$types = "";
+$types = '';
 $params = [];
-
-if ($search !== "") {
-    $where[] = "(events.event_title LIKE ? OR events.venue LIKE ?)";
-    $types .= "ss";
-    $like = "%" . $search . "%";
-    array_push($params, $like, $like);
+if ($search !== '') {
+    $where[] = '(events.event_title LIKE ? OR events.venue LIKE ? OR events.description LIKE ?)';
+    $types .= 'sss';
+    $like = '%' . $search . '%';
+    array_push($params, $like, $like, $like);
 }
 if ($collegeFilter > 0) {
-    $where[] = "events.college_id = ?";
-    $types .= "i";
+    $where[] = 'events.college_id = ?';
+    $types .= 'i';
     $params[] = $collegeFilter;
 }
-
-$whereSql = $where ? " WHERE " . implode(" AND ", $where) : "";
-$stmt = $conn->prepare("
-    SELECT events.*, colleges.college_name
-    FROM events
-    LEFT JOIN colleges ON colleges.college_id = events.college_id
-    " . $whereSql . "
-    ORDER BY events.event_date ASC, events.event_id DESC
-");
-if ($types !== "") {
+$whereSql = $where ? ' WHERE ' . implode(' AND ', $where) : '';
+$stmt = $conn->prepare("SELECT events.*, colleges.college_name FROM events LEFT JOIN colleges ON colleges.college_id = events.college_id {$whereSql} ORDER BY events.event_date ASC, events.event_id DESC");
+if ($types !== '') {
     $stmt->bind_param($types, ...$params);
 }
 $stmt->execute();
@@ -44,26 +36,34 @@ require_once "../includes/header.php";
 ?>
 
 <section class="page-heading">
-    <h1>Event Calendar</h1>
-    <p>Browse upcoming events in a card layout with posters, descriptions, and college filters.</p>
+    <div>
+        <h1>Events</h1>
+        <p>Present campus events with posters, venue details, and clear scheduling information.</p>
+    </div>
+    <div class="toolbar-actions">
+        <a class="btn" href="add_event.php">Create Event</a>
+    </div>
 </section>
+
+<nav class="module-tabs">
+    <a class="module-tab active" href="view_events.php">Event Board</a>
+    <a class="module-tab" href="add_event.php">Create Event</a>
+</nav>
 
 <section class="panel">
     <form class="filters-form" method="get">
         <div class="filter-row">
             <div class="filter-item search-input">
                 <label for="q">Search</label>
-                <input type="text" id="q" name="q" value="<?php echo e($search); ?>" placeholder="Search event title or venue">
+                <input type="text" id="q" name="q" value="<?php echo e($search); ?>" placeholder="Search event title, venue, or description">
             </div>
             <?php if (is_admin()): ?>
                 <div class="filter-item">
-                    <label for="college_id">College</label>
+                    <label for="college_id">Campus</label>
                     <select id="college_id" name="college_id">
-                        <option value="">All Colleges</option>
+                        <option value="">All Campuses</option>
                         <?php foreach ($colleges as $college): ?>
-                            <option value="<?php echo (int) $college["college_id"]; ?>" <?php echo $collegeFilter === (int) $college["college_id"] ? "selected" : ""; ?>>
-                                <?php echo e($college["college_name"]); ?>
-                            </option>
+                            <option value="<?php echo (int) $college['college_id']; ?>" <?php echo $collegeFilter === (int) $college['college_id'] ? 'selected' : ''; ?>><?php echo e($college['college_name']); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -71,7 +71,6 @@ require_once "../includes/header.php";
             <div class="filter-item action-group">
                 <button type="submit">Apply</button>
                 <a class="btn-light" href="view_events.php">Reset</a>
-                <a class="btn-ghost" href="add_event.php">Create Event</a>
             </div>
         </div>
     </form>
@@ -81,26 +80,28 @@ require_once "../includes/header.php";
             <?php while ($row = $result->fetch_assoc()): ?>
                 <article class="event-card">
                     <div class="event-card-image">
-                        <?php if (!empty($row["poster_image"])): ?>
-                            <img src="<?php echo e($basePath . $row["poster_image"]); ?>" alt="<?php echo e($row["event_title"]); ?>">
+                        <?php if (!empty($row['poster_image'])): ?>
+                            <img src="<?php echo e($basePath . $row['poster_image']); ?>" alt="<?php echo e($row['event_title']); ?>">
                         <?php endif; ?>
                     </div>
-                    <h2><?php echo e($row["event_title"]); ?></h2>
-                    <div class="event-meta">
-                        <span><?php echo e(format_date_label($row["event_date"])); ?></span>
-                        <span><?php echo e($row["venue"]); ?></span>
-                        <?php if (is_admin()): ?><span><?php echo e($row["college_name"]); ?></span><?php endif; ?>
+                    <div>
+                        <h2><?php echo e($row['event_title']); ?></h2>
+                        <div class="event-meta">
+                            <span class="chip"><?php echo e(format_date_label($row['event_date'])); ?></span>
+                            <span class="chip"><?php echo e($row['venue']); ?></span>
+                            <?php if (is_admin()): ?><span class="chip"><?php echo e($row['college_name']); ?></span><?php endif; ?>
+                        </div>
                     </div>
-                    <p class="muted"><?php echo e($row["description"]); ?></p>
+                    <p class="muted"><?php echo e($row['description']); ?></p>
                     <div class="action-group">
-                        <a class="btn-light" href="edit_event.php?id=<?php echo (int) $row["event_id"]; ?>">Edit</a>
-                        <a class="btn-danger" href="delete_event.php?id=<?php echo (int) $row["event_id"]; ?>" onclick="return confirm('Delete this event?');">Delete</a>
+                        <a class="btn-light" href="edit_event.php?id=<?php echo (int) $row['event_id']; ?>">Edit</a>
+                        <a class="btn-danger" href="delete_event.php?id=<?php echo (int) $row['event_id']; ?>" onclick="return confirm('Delete this event?');">Delete</a>
                     </div>
                 </article>
             <?php endwhile; ?>
         </div>
     <?php else: ?>
-        <?php render_empty_state("No events found", "Create an event to build out the campus calendar."); ?>
+        <?php render_empty_state('No events found', 'Create an event to build the campus calendar.', 'add_event.php', 'Create Event'); ?>
     <?php endif; ?>
 </section>
 

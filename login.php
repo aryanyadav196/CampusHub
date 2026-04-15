@@ -16,7 +16,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     } else {
         $stmt = $conn->prepare("
             SELECT
-                users.user_id,
+                users.id,
                 users.name,
                 users.email,
                 users.password_hash,
@@ -24,7 +24,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 users.college_id,
                 colleges.college_name
             FROM users
-            LEFT JOIN colleges ON colleges.college_id = users.college_id
+            LEFT JOIN colleges ON users.college_id = colleges.id
             WHERE users.email = ?
             LIMIT 1
         ");
@@ -38,7 +38,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $errorMessage = "Invalid login credentials.";
         } else {
             $_SESSION["user"] = [
-                "user_id" => (int) $user["user_id"],
+                "id" => (int) $user["id"],
                 "name" => $user["name"],
                 "email" => $user["email"],
                 "role" => $user["role"],
@@ -56,7 +56,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CampusHub Login</title>
+    <title>CampusHub Sign In</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -65,18 +65,18 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 <body class="auth-page">
     <section class="auth-card">
         <div class="auth-showcase">
-            <p class="hero-kicker">CampusHub SaaS</p>
-            <h2>One system for student records, library operations, events, and reporting.</h2>
-            <p>Built for DBMS practicals, structured like a real multi-college campus platform.</p>
+            <p class="hero-kicker">Campus Operations</p>
+            <h2>Manage student records, library services, events, and reports from one secure workspace.</h2>
+            <p>Designed for institutions that need clear workflows, fast access to records, and dependable day-to-day operations.</p>
             <ul>
-                <li>Role-based admin and college access</li>
-                <li>Responsive dashboard with analytics</li>
-                <li>Centralized student, library, and event workflows</li>
+                <li>Responsive dashboard with live operational metrics</li>
+                <li>Integrated student, library, and event modules</li>
+                <li>Role-based access for institution and campus administrators</li>
             </ul>
         </div>
         <div class="auth-form">
             <h1>Sign in</h1>
-            <p class="muted">Use your CampusHub account to continue.</p>
+            <p class="muted">Use your account to continue to CampusHub.</p>
 
             <?php if ($errorMessage !== ""): ?>
                 <div class="error"><?php echo e($errorMessage); ?></div>
@@ -95,10 +95,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 <button type="submit">Login</button>
             </form>
 
-            <div class="demo-credentials">
-                <strong>Demo accounts</strong>
-                <p>Admin: `admin@campushub.com` / `admin123`</p>
-                <p>College: `north@campushub.com` / `college123`</p>
+            <div class="sample-accounts">
+                <strong>Sample accounts</strong>
+                <p>Institution admin: admin@campushub.com / admin123</p>
+                <p>Campus admin: north@campushub.com / college123</p>
             </div>
         </div>
     </section>
